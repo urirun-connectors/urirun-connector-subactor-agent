@@ -27,9 +27,9 @@ def test_package_and_connector_manifest_versions_match() -> None:
         Path("urirun_connector_subactor_agent/connector.manifest.json").read_text(encoding="utf-8")
     )
 
-    assert project["project"]["version"] == manifest["version"] == "0.4.0"
-    assert manifest["install"]["pipSpec"].endswith("@v0.4.0")
-    assert "ifuri-skills-agent>=0.16.0" in manifest["requires"]
+    assert project["project"]["version"] == manifest["version"] == "0.4.1"
+    assert manifest["install"]["pipSpec"].endswith("@v0.4.1")
+    assert "ifuri-skills-agent>=0.16.1" in manifest["requires"]
 
 
 @pytest.fixture
@@ -77,15 +77,15 @@ def test_bindings_are_complete_and_serializable() -> None:
             assert binding["adapter"] == "local-function-subprocess"
 
 
-def test_import_is_lazy_and_does_not_import_todo_agent() -> None:
-    script = "import sys; import urirun_connector_subactor_agent.core; print(any(k == 'todo_agent' or k.startswith('todo_agent.') for k in sys.modules))"
+def test_import_is_lazy_and_does_not_import_skills_agent() -> None:
+    script = "import sys; import urirun_connector_subactor_agent.core; print(any(k == 'skills_agent' or k.startswith('skills_agent.') for k in sys.modules))"
     completed = subprocess.run([sys.executable, "-c", script], check=True, capture_output=True, text=True)
     assert completed.stdout.strip() == "False"
 
 
 def test_discovery_maps_external_trigger_to_manual(configured, monkeypatch: pytest.MonkeyPatch) -> None:
     tasks = [{"task_id": "0042", "schedule_slot": "manual"}]
-    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api(tasks))
+    monkeypatch.setattr(controller, "_skills_api", lambda: _fake_api(tasks))
 
     result = core.tasks_discover(event="ticket", task_id="0042")
 
@@ -96,7 +96,7 @@ def test_discovery_maps_external_trigger_to_manual(configured, monkeypatch: pyte
 
 def test_cycle_is_dry_run_by_default(configured, monkeypatch: pytest.MonkeyPatch) -> None:
     tasks = [{"task_id": "0042", "schedule_slot": "2026-07-21T08:00:00Z"}]
-    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api(tasks))
+    monkeypatch.setattr(controller, "_skills_api", lambda: _fake_api(tasks))
 
     result = core.cycle_run(trigger="schedule", now="2026-07-21T08:00:00Z")
 
@@ -106,7 +106,7 @@ def test_cycle_is_dry_run_by_default(configured, monkeypatch: pytest.MonkeyPatch
 
 
 def test_execution_requires_operator_gate(configured, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api([]))
+    monkeypatch.setattr(controller, "_skills_api", lambda: _fake_api([]))
     result = core.cycle_run(trigger="manual", execute=True)
     assert result["ok"] is False
     assert "SUBACTOR_AGENT_ENABLED" in str(result["error"])
@@ -117,7 +117,7 @@ def test_schedule_slot_is_executed_once(configured, monkeypatch: pytest.MonkeyPa
     calls: list = []
     tasks = [{"task_id": "0042", "schedule_slot": "2026-07-21T08:00:00Z"}]
     monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
-    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api(tasks, calls=calls))
+    monkeypatch.setattr(controller, "_skills_api", lambda: _fake_api(tasks, calls=calls))
 
     first = core.cycle_run(trigger="schedule", execute=True, now="2026-07-21T08:00:00Z")
     second = core.cycle_run(trigger="schedule", execute=True, now="2026-07-21T08:00:30Z")
@@ -131,7 +131,7 @@ def test_trigger_is_deduplicated_and_loop_prioritizes_it(configured, monkeypatch
     calls: list = []
     tasks = [{"task_id": "0042", "schedule_slot": "manual"}]
     monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
-    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api(tasks, calls=calls))
+    monkeypatch.setattr(controller, "_skills_api", lambda: _fake_api(tasks, calls=calls))
 
     first = core.trigger_emit(kind="ticket", event_id="PLF-42", task_id="0042", context={"ticket_id": "PLF-42"})
     duplicate = core.trigger_emit(kind="ticket", event_id="PLF-42", task_id="0042")
@@ -171,10 +171,10 @@ def test_planfile_ticket_is_enqueued_executed_and_completed(configured, monkeypa
     monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
     monkeypatch.setenv("SUBACTOR_PLANFILE_BACKEND", "onedev")
     monkeypatch.setattr(controller, "_planfile_registry", lambda settings: backend)
-    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api([{"task_id": "0042", "schedule_slot": "manual"}], calls=calls))
+    monkeypatch.setattr(controller, "_skills_api", lambda: _fake_api([{"task_id": "0042", "schedule_slot": "manual"}], calls=calls))
     monkeypatch.setattr(
         controller,
-        "_todo_planfile_api",
+        "_skills_planfile_api",
         lambda: (
             lambda repo_root, selected_backend: [{"task_id": "0042"}],
             lambda repo_root, selected_backend, **kwargs: {
@@ -205,12 +205,12 @@ def test_planfile_preview_keeps_ticket_open(configured, monkeypatch: pytest.Monk
     monkeypatch.setattr(controller, "_planfile_registry", lambda settings: backend)
     monkeypatch.setattr(
         controller,
-        "_todo_api",
+        "_skills_api",
         lambda: _fake_api([{"task_id": "0042", "schedule_slot": "manual"}]),
     )
     monkeypatch.setattr(
         controller,
-        "_todo_planfile_api",
+        "_skills_planfile_api",
         lambda: (
             lambda repo_root, selected_backend: [{"task_id": "0042"}],
             lambda repo_root, selected_backend, **kwargs: {
@@ -238,12 +238,12 @@ def test_failed_planfile_ticket_reopens_and_keeps_retry_event(configured, monkey
     monkeypatch.setattr(controller, "_planfile_registry", lambda settings: backend)
     monkeypatch.setattr(
         controller,
-        "_todo_api",
+        "_skills_api",
         lambda: _fake_api([{"task_id": "0042", "schedule_slot": "manual"}], status="failed"),
     )
     monkeypatch.setattr(
         controller,
-        "_todo_planfile_api",
+        "_skills_planfile_api",
         lambda: (
             lambda repo_root, selected_backend: [],
             lambda repo_root, selected_backend, **kwargs: {
@@ -303,7 +303,7 @@ def test_deferred_planfile_retry_does_not_block_next_ticket(configured, monkeypa
     monkeypatch.setattr(controller, "_planfile_registry", lambda settings: backend)
     monkeypatch.setattr(
         controller,
-        "_todo_api",
+        "_skills_api",
         lambda: (
             lambda selected_root, *, event, task_id, now_utc: [
                 item for item in tasks if not task_id or item["task_id"] == task_id
@@ -313,7 +313,7 @@ def test_deferred_planfile_retry_does_not_block_next_ticket(configured, monkeypa
     )
     monkeypatch.setattr(
         controller,
-        "_todo_planfile_api",
+        "_skills_planfile_api",
         lambda: (
             lambda repo_root, selected_backend: [],
             next_task,
@@ -344,12 +344,12 @@ def test_empty_planfile_backlog_does_not_fall_back_to_local_schedule(
     monkeypatch.setattr(controller, "_planfile_registry", lambda settings: backend)
     monkeypatch.setattr(
         controller,
-        "_todo_api",
+        "_skills_api",
         lambda: _fake_api([{"task_id": "0042", "schedule_slot": "due"}], calls=calls),
     )
     monkeypatch.setattr(
         controller,
-        "_todo_planfile_api",
+        "_skills_planfile_api",
         lambda: (
             lambda repo_root, selected_backend: [],
             lambda repo_root, selected_backend, **kwargs: None,
@@ -386,7 +386,7 @@ def test_non_retryable_planfile_policy_failure_moves_to_review(configured, monke
     monkeypatch.setattr(controller, "_planfile_registry", lambda settings: backend)
     monkeypatch.setattr(
         controller,
-        "_todo_api",
+        "_skills_api",
         lambda: (
             lambda root, *, event, task_id, now_utc: [{"task_id": "0042", "schedule_slot": "manual"}],
             run_task,
@@ -394,7 +394,7 @@ def test_non_retryable_planfile_policy_failure_moves_to_review(configured, monke
     )
     monkeypatch.setattr(
         controller,
-        "_todo_planfile_api",
+        "_skills_planfile_api",
         lambda: (
             lambda repo_root, selected_backend: [],
             lambda repo_root, selected_backend, **kwargs: {
@@ -424,7 +424,7 @@ def test_loop_progresses_across_more_tasks_than_cycle_limit(configured, monkeypa
         {"task_id": "0043", "schedule_slot": "manual"},
     ]
     monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
-    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api(tasks, calls=calls))
+    monkeypatch.setattr(controller, "_skills_api", lambda: _fake_api(tasks, calls=calls))
     controller.emit_trigger(kind="repository", event_id="push-1")
 
     result = controller.run_loop(max_cycles=2, interval_seconds=0, max_tasks=1, execute=True)
@@ -437,7 +437,7 @@ def test_loop_progresses_across_more_tasks_than_cycle_limit(configured, monkeypa
 def test_failed_task_gets_backoff_and_event_stays_pending(configured, monkeypatch: pytest.MonkeyPatch) -> None:
     tasks = [{"task_id": "0042", "schedule_slot": "manual"}]
     monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
-    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api(tasks, status="failed"))
+    monkeypatch.setattr(controller, "_skills_api", lambda: _fake_api(tasks, status="failed"))
     controller.emit_trigger(kind="webhook", event_id="hook-1", task_id="0042")
 
     first = controller.run_loop(max_cycles=1, interval_seconds=0, execute=True)["cycles"][0]
@@ -465,7 +465,7 @@ def test_successful_retry_clears_stale_task_health_retry_at(configured) -> None:
 
 def test_apply_changes_has_a_separate_gate(configured, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
-    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api([]))
+    monkeypatch.setattr(controller, "_skills_api", lambda: _fake_api([]))
     result = core.cycle_run(trigger="manual", execute=True, apply_changes=True)
     assert result["ok"] is False
     assert "SUBACTOR_AGENT_ALLOW_APPLY" in str(result["error"])

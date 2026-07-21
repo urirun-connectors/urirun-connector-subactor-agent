@@ -1,7 +1,7 @@
 {
   "id": "subactor-agent",
   "name": "Subactor Agent Control Loop",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "status": "stable",
   "category": "Automation",
   "summary": "Controls skills-agent capability execution through bounded loops, cron discovery and deduplicated triggers.",
@@ -18,10 +18,10 @@
     "subactor-agent://host/loop/session/run",
     "subactor-agent://host/runs/query/list"
   ],
-  "requires": ["python>=3.11", "urirun>=0.4.190", "ifuri-skills-agent>=0.16.0"],
+  "requires": ["python>=3.11", "urirun>=0.4.190", "ifuri-skills-agent>=0.16.1"],
   "install": {
     "mode": "pip",
-    "pipSpec": "urirun-connector-subactor-agent @ git+https://github.com/urirun-connectors/urirun-connector-subactor-agent.git@v0.4.0"
+    "pipSpec": "urirun-connector-subactor-agent @ git+https://github.com/urirun-connectors/urirun-connector-subactor-agent.git@v0.4.1"
   },
   "provenance": "official",
   "publisher": {

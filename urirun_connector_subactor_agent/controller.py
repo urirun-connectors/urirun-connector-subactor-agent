@@ -220,11 +220,11 @@ def _cycle_lease(settings: Settings) -> Iterator[None]:
         _THREAD_CYCLE_LOCK.release()
 
 
-def _todo_api() -> tuple[Callable[..., list[dict[str, Any]]], Callable[..., tuple[dict[str, Any], Path]]]:
-    """Lazy boundary using the stable internal ``todo_agent`` compatibility module."""
+def _skills_api() -> tuple[Callable[..., list[dict[str, Any]]], Callable[..., tuple[dict[str, Any], Path]]]:
+    """Lazy boundary using the stable internal ``skills_agent`` compatibility module."""
     try:
-        from todo_agent.discovery import discover_tasks
-        from todo_agent.runner import run_task
+        from skills_agent.discovery import discover_tasks
+        from skills_agent.runner import run_task
     except ImportError as exc:
         raise ConfigurationError(
             "ifuri-skills-agent is not installed; install urirun-connector-subactor-agent[skills]"
@@ -232,10 +232,10 @@ def _todo_api() -> tuple[Callable[..., list[dict[str, Any]]], Callable[..., tupl
     return discover_tasks, run_task
 
 
-def _todo_planfile_api() -> tuple[Callable[..., Any], Callable[..., Any], Callable[..., Any]]:
+def _skills_planfile_api() -> tuple[Callable[..., Any], Callable[..., Any], Callable[..., Any]]:
     """Lazy Planfile registry boundary owned by skills-agent."""
     try:
-        from todo_agent.planfile_backend import (
+        from skills_agent.planfile_backend import (
             next_backend_task,
             set_backend_task_status,
             sync_tasks_to_backend,
@@ -261,7 +261,7 @@ def _planfile_registry(settings: Settings) -> Any:
     if not password_file.is_file():
         raise ConfigurationError("SUBACTOR_PLANFILE_ONEDEV_PASSWORD_FILE is not a file")
     try:
-        from todo_agent.planfile_backend import open_onedev_backend
+        from skills_agent.planfile_backend import open_onedev_backend
     except ImportError as exc:
         raise ConfigurationError("skills-agent Planfile OneDev integration is unavailable") from exc
     try:
@@ -295,7 +295,7 @@ def _poll_planfile(settings: Settings, store: StateStore) -> dict[str, Any] | No
     if not settings.planfile_backend:
         return None
     backend = _planfile_registry(settings)
-    sync_tasks, next_task, _ = _todo_planfile_api()
+    sync_tasks, next_task, _ = _skills_planfile_api()
     synced = sync_tasks(settings.root, backend)
     pending_ticket_ids = _pending_planfile_ticket_ids(store)
     ticket = next_task(settings.root, backend, exclude_ticket_ids=pending_ticket_ids)
@@ -332,7 +332,7 @@ def _set_planfile_event_status(
     if context.get("source") != "planfile" or not context.get("ticket_id"):
         return None
     backend = _planfile_registry(settings)
-    _, _, set_status = _todo_planfile_api()
+    _, _, set_status = _skills_planfile_api()
     ticket_id = str(context["ticket_id"])
     set_status(backend, ticket_id, status)
     return {"ticket": ticket_id, "status": status}
@@ -444,7 +444,7 @@ def discover(*, event: str = "manual", task_id: str = "", now: str = "") -> dict
     normalized_event = _valid_trigger(event)
     selected_task = _valid_task_id(task_id)
     discovery_event = "schedule" if normalized_event == "schedule" else "manual"
-    discover_tasks, _ = _todo_api()
+    discover_tasks, _ = _skills_api()
     tasks = discover_tasks(
         settings.root,
         event=discovery_event,
@@ -670,7 +670,7 @@ def run_cycle(
         discovered_tasks = discovery["tasks"]
         selected = discovered_tasks[:max_tasks] if not execute else discovered_tasks
         results: list[dict[str, Any]] = []
-        _, run_task = _todo_api()
+        _, run_task = _skills_api()
         attempted = 0
 
         for task in selected:
@@ -929,7 +929,7 @@ def doctor() -> dict[str, Any]:
     dependency_ready = True
     dependency_error = ""
     try:
-        _todo_api()
+        _skills_api()
     except ControllerError as exc:
         dependency_ready = False
         dependency_error = str(exc)
@@ -939,7 +939,7 @@ def doctor() -> dict[str, Any]:
     if planfile_backend:
         try:
             _planfile_registry(load_settings(require_root=False))
-            _todo_planfile_api()
+            _skills_planfile_api()
             planfile_ready = True
         except ControllerError as exc:
             planfile_error = str(exc)
@@ -948,7 +948,6 @@ def doctor() -> dict[str, Any]:
         "configured": configured,
         "root_ready": root_ready,
         "skills_agent_ready": dependency_ready,
-        "todo_agent_ready": dependency_ready,
         "execution_enabled": _env_bool("SUBACTOR_AGENT_ENABLED"),
         "apply_enabled": _env_bool("SUBACTOR_AGENT_ALLOW_APPLY"),
         "planfile_backend": planfile_backend or None,
