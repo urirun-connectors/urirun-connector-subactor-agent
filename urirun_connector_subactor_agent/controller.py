@@ -26,6 +26,9 @@ TRIGGER_KINDS = frozenset({"manual", "schedule", "ticket", "repository", "webhoo
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$")
 TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 CONTEXT_FIELDS = frozenset({"source", "repository", "ticket_id", "ref", "reason"})
+NON_RETRYABLE_ERROR_TYPES = frozenset(
+    {"BackendContractError", "ConfigError", "SecurityError", "TargetScopeError"}
+)
 _THREAD_CYCLE_LOCK = threading.Lock()
 _THREAD_STATE_LOCK = threading.Lock()
 
@@ -322,7 +325,14 @@ def _finish_planfile_event(settings: Settings, event: dict[str, Any], cycle: dic
         return None
     results = cycle.get("results") if isinstance(cycle.get("results"), list) else []
     statuses = {str(item.get("status")) for item in results if isinstance(item, dict)}
-    if "failed" in statuses:
+    non_retryable = any(
+        item.get("status") == "failed" and item.get("retryable") is False
+        for item in results
+        if isinstance(item, dict)
+    )
+    if non_retryable:
+        target = "review"
+    elif "failed" in statuses:
         target = "open"
     elif "warning" in statuses:
         target = "review"
@@ -332,7 +342,10 @@ def _finish_planfile_event(settings: Settings, event: dict[str, Any], cycle: dic
         target = "review"
     else:
         return None
-    return _set_planfile_event_status(settings, event, target)
+    transition = _set_planfile_event_status(settings, event, target)
+    if non_retryable and transition:
+        _complete_event(StateStore(settings.state_dir), str(event.get("id") or ""))
+    return transition
 
 
 def _parse_now(value: str = "") -> datetime:
@@ -359,6 +372,18 @@ def _valid_trigger(kind: str) -> str:
     if normalized not in TRIGGER_KINDS:
         raise ControllerError(f"trigger must be one of {sorted(TRIGGER_KINDS)}")
     return normalized
+
+
+def _retryable_error(exc: Exception) -> bool:
+    """Classify policy/contract causes without importing todo-agent eagerly."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if type(current).__name__ in NON_RETRYABLE_ERROR_TYPES:
+            return False
+        current = current.__cause__ or current.__context__
+    return True
 
 
 def discover(*, event: str = "manual", task_id: str = "", now: str = "") -> dict[str, Any]:
@@ -613,6 +638,7 @@ def run_cycle(
                     }
                 )
             except Exception as exc:  # todo-agent errors become stateful retry feedback
+                retryable = _retryable_error(exc)
                 receipt = _finish(
                     store,
                     settings,
@@ -628,6 +654,7 @@ def run_cycle(
                         "status": "failed",
                         "receipt": key,
                         "error": str(exc)[:500],
+                        "retryable": retryable,
                         "retry_at": receipt.get("retry_at"),
                     }
                 )

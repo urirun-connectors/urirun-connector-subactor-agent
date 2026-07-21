@@ -250,6 +250,57 @@ def test_failed_planfile_ticket_reopens_and_keeps_retry_event(configured, monkey
     assert controller.status()["queue_depth"] == 1
 
 
+def test_non_retryable_planfile_policy_failure_moves_to_review(configured, monkeypatch: pytest.MonkeyPatch) -> None:
+    transitions: list[tuple[str, str]] = []
+    backend = object()
+
+    class TargetScopeError(ValueError):
+        pass
+
+    class TaskRunError(RuntimeError):
+        pass
+
+    def run_task(root, task_id, *, apply_changes):
+        try:
+            raise TargetScopeError("target scope is invalid")
+        except TargetScopeError as exc:
+            raise TaskRunError(str(exc)) from exc
+
+    monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SUBACTOR_PLANFILE_BACKEND", "onedev")
+    monkeypatch.setattr(controller, "_planfile_registry", lambda settings: backend)
+    monkeypatch.setattr(
+        controller,
+        "_todo_api",
+        lambda: (
+            lambda root, *, event, task_id, now_utc: [{"task_id": "0042", "schedule_slot": "manual"}],
+            run_task,
+        ),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_todo_planfile_api",
+        lambda: (
+            lambda repo_root, selected_backend: [],
+            lambda repo_root, selected_backend: {
+                "ticket_id": "94",
+                "task_id": "0042",
+                "status": "open",
+                "updated_at": "2026-07-21T12:03:00Z",
+            },
+            lambda selected_backend, ticket_id, status: transitions.append((ticket_id, status)),
+        ),
+    )
+
+    result = controller.run_loop(max_cycles=1, interval_seconds=0, execute=True)
+
+    failure = result["cycles"][0]["results"][0]
+    assert failure["status"] == "failed"
+    assert failure["retryable"] is False
+    assert transitions == [("94", "in_progress"), ("94", "review")]
+    assert controller.status()["queue_depth"] == 0
+
+
 def test_loop_progresses_across_more_tasks_than_cycle_limit(configured, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list = []
     tasks = [

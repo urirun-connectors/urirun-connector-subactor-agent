@@ -59,6 +59,10 @@ ustawia ticket jako `In Progress`; receipt `succeeded`, `warning` i `failed`
 przechodzi odpowiednio do `Closed`, `In Review` i ponownie `Open`. Podgląd
 `execute=false` nie zmienia statusu ticketu.
 
+Błąd kontraktu, bezpieczeństwa lub zakresu celu nie jest retryowany w pętli:
+ticket przechodzi do `In Review`, a kolejka może podjąć następne zadanie. Błędy
+wykonawcze i zależności pozostają retryowalne (`Open` + backoff).
+
 Stan jest atomowym JSON-em. Przechowuje generację, idempotency receipts, kolejkę
 triggerów, ostatnie 200 wyników i licznik porażek. Nie przechowuje promptów,
 tokenów ani pełnych logów agentów; artefakty pozostają w `.todo-agent-runs`.
