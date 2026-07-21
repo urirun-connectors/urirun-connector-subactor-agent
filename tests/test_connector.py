@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,17 @@ ROUTES = {
     "subactor-agent://host/tasks/query/discover",
     "subactor-agent://host/trigger/event/emit",
 }
+
+
+def test_package_and_connector_manifest_versions_match() -> None:
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        Path("urirun_connector_subactor_agent/connector.manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert project["project"]["version"] == manifest["version"] == "0.3.1"
+    assert manifest["install"]["pipSpec"].endswith("@v0.3.1")
+    assert "ifuri-todo-agent>=0.15.1" in manifest["requires"]
 
 
 @pytest.fixture
