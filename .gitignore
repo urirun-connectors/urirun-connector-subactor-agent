@@ -7,3 +7,8 @@ dist/
 build/
 .venv/
 state/
+
+# koru runtime artefacts (generated)
+.planfile/.koru/
+.koru/
+.planfile/sprints/*.bak-*
