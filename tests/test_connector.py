@@ -27,8 +27,8 @@ def test_package_and_connector_manifest_versions_match() -> None:
         Path("urirun_connector_subactor_agent/connector.manifest.json").read_text(encoding="utf-8")
     )
 
-    assert project["project"]["version"] == manifest["version"] == "0.4.1"
-    assert manifest["install"]["pipSpec"].endswith("@v0.4.1")
+    assert project["project"]["version"] == manifest["version"] == "0.4.2"
+    assert manifest["install"]["pipSpec"].endswith("@v0.4.2")
     assert "ifuri-skills-agent>=0.16.1" in manifest["requires"]
 
 
