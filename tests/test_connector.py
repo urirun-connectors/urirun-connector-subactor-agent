@@ -123,6 +123,25 @@ def test_trigger_is_deduplicated_and_loop_prioritizes_it(configured, monkeypatch
     assert calls and state["queue_depth"] == 0
 
 
+def test_trigger_accepts_json_context_from_generated_cli(configured) -> None:
+    result = core.trigger_emit(
+        kind="ticket",
+        event_id="PLF-43",
+        task_id="0042",
+        context_json='{"ticket_id":"PLF-43"}',
+    )
+
+    assert result["ok"] is True
+    assert result["event"]["context"] == {"ticket_id": "PLF-43"}
+
+
+def test_trigger_rejects_non_object_json_context(configured) -> None:
+    result = core.trigger_emit(kind="webhook", event_id="hook-json", context_json='["unsafe"]')
+
+    assert result["ok"] is False
+    assert "must encode an object" in result["error"]
+
+
 def test_loop_progresses_across_more_tasks_than_cycle_limit(configured, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list = []
     tasks = [

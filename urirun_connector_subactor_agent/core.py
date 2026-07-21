@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -67,10 +68,26 @@ def trigger_emit(
     event_id: str = "",
     task_id: str = "",
     context: dict[str, Any] | None = None,
+    context_json: str = "",
 ) -> dict[str, Any]:
+    def operation() -> dict[str, Any]:
+        if context is not None and context_json:
+            raise ValueError("use context or context_json, not both")
+        parsed_context = context
+        if context_json:
+            parsed_context = json.loads(context_json)
+            if not isinstance(parsed_context, dict):
+                raise ValueError("context_json must encode an object")
+        return controller.emit_trigger(
+            kind=kind,
+            event_id=event_id,
+            task_id=task_id,
+            context=parsed_context,
+        )
+
     return _ok(
         "trigger-emit",
-        lambda: controller.emit_trigger(kind=kind, event_id=event_id, task_id=task_id, context=context),
+        operation,
     )
 
 
