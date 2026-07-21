@@ -1,4 +1,4 @@
-"""URI-native control plane for Subactor's todo-agent execution fleet."""
+"""URI-native control plane for Subactor's skills-agent execution fleet."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def _ok(action: str, operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
 @conn.handler(
     "tasks/query/discover",
     isolated=False,
-    meta={"label": "Discover runnable todo-agent tasks for a manual, cron or external trigger"},
+    meta={"label": "Discover runnable skills-agent tasks for a manual, cron or external trigger"},
 )
 def tasks_discover(event: str = "manual", task_id: str = "", now: str = "") -> dict[str, Any]:
     return _ok("tasks-discover", lambda: controller.discover(event=event, task_id=task_id, now=now))
@@ -43,7 +43,7 @@ def state_status() -> dict[str, Any]:
 @conn.handler(
     "runs/query/list",
     isolated=False,
-    meta={"label": "List bounded execution receipts produced by todo-agent cycles"},
+    meta={"label": "List bounded execution receipts produced by skills-agent cycles"},
 )
 def runs_list(limit: int = 20) -> dict[str, Any]:
     return _ok("runs-list", lambda: controller.runs(limit=limit))
@@ -52,7 +52,7 @@ def runs_list(limit: int = 20) -> dict[str, Any]:
 @conn.handler(
     "doctor/query/report",
     isolated=False,
-    meta={"label": "Report todo-agent dependency, repository and mutation-gate readiness"},
+    meta={"label": "Report skills-agent dependency, repository and mutation-gate readiness"},
 )
 def doctor_report() -> dict[str, Any]:
     return _ok("doctor-report", controller.doctor)
@@ -94,7 +94,7 @@ def trigger_emit(
 @conn.handler(
     "cycle/command/run",
     isolated=True,
-    meta={"label": "Run one deduplicated todo-agent control cycle with deterministic retry feedback"},
+    meta={"label": "Run one deduplicated skills-agent control cycle with deterministic retry feedback"},
 )
 def cycle_run(
     trigger: str = "schedule",

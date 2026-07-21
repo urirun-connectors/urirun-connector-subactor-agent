@@ -27,17 +27,18 @@ def test_package_and_connector_manifest_versions_match() -> None:
         Path("urirun_connector_subactor_agent/connector.manifest.json").read_text(encoding="utf-8")
     )
 
-    assert project["project"]["version"] == manifest["version"] == "0.3.2"
-    assert manifest["install"]["pipSpec"].endswith("@v0.3.2")
-    assert "ifuri-todo-agent>=0.15.1" in manifest["requires"]
+    assert project["project"]["version"] == manifest["version"] == "0.4.0"
+    assert manifest["install"]["pipSpec"].endswith("@v0.4.0")
+    assert "ifuri-skills-agent>=0.16.0" in manifest["requires"]
 
 
 @pytest.fixture
 def configured(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path]:
-    root = tmp_path / "todo-agent"
-    (root / "TODO").mkdir(parents=True)
+    root = tmp_path / "skills-agent"
+    (root / "SKILLS").mkdir(parents=True)
     state = tmp_path / "state"
-    monkeypatch.setenv("SUBACTOR_TODO_ROOT", str(root))
+    monkeypatch.setenv("SUBACTOR_SKILLS_ROOT", str(root))
+    monkeypatch.delenv("SUBACTOR_TODO_ROOT", raising=False)
     monkeypatch.setenv("SUBACTOR_AGENT_STATE_DIR", str(state))
     monkeypatch.delenv("SUBACTOR_AGENT_ENABLED", raising=False)
     monkeypatch.delenv("SUBACTOR_AGENT_ALLOW_APPLY", raising=False)
@@ -60,7 +61,7 @@ def _fake_api(tasks: list[dict], *, status: str = "succeeded", calls: list | Non
     def run_task(root, task_id, *, apply_changes):
         if calls is not None:
             calls.append((root, task_id, apply_changes))
-        return {"status": status, "correlation_id": f"todo-agent:{task_id}:run"}, root / ".todo-agent-runs" / task_id / "run"
+        return {"status": status, "correlation_id": f"skills-agent:{task_id}:run"}, root / ".skills-agent-runs" / task_id / "run"
 
     return discover_tasks, run_task
 
@@ -279,7 +280,7 @@ def test_deferred_planfile_retry_does_not_block_next_ticket(configured, monkeypa
     def run_task(selected_root, task_id, *, apply_changes):
         calls.append((selected_root, task_id, apply_changes))
         status = "failed" if task_id == "0042" else "succeeded"
-        return {"status": status, "correlation_id": f"todo-agent:{task_id}:run"}, root / "runs" / task_id
+        return {"status": status, "correlation_id": f"skills-agent:{task_id}:run"}, root / "runs" / task_id
 
     def next_task(repo_root, selected_backend, *, exclude_ticket_ids=None):
         excluded = exclude_ticket_ids or set()
@@ -479,8 +480,20 @@ def test_payload_cannot_supply_commands_paths_or_environment(configured) -> None
 
 
 def test_read_handlers_return_failure_envelopes_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SUBACTOR_SKILLS_ROOT", raising=False)
     monkeypatch.delenv("SUBACTOR_TODO_ROOT", raising=False)
     assert core.tasks_discover()["ok"] is False
     assert core.state_status()["ok"] is False
     assert core.doctor_report()["ok"] is True
     assert core.doctor_report()["status"] == "not_ready"
+
+
+def test_legacy_todo_root_remains_a_compatibility_alias(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = tmp_path / "todo-agent"
+    (root / "TODO").mkdir(parents=True)
+    monkeypatch.delenv("SUBACTOR_SKILLS_ROOT", raising=False)
+    monkeypatch.setenv("SUBACTOR_TODO_ROOT", str(root))
+
+    assert controller.load_settings().root == root.resolve()

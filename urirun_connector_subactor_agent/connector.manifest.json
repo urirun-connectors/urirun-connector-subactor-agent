@@ -1,13 +1,13 @@
 {
   "id": "subactor-agent",
   "name": "Subactor Agent Control Loop",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "status": "stable",
   "category": "Automation",
-  "summary": "Controls todo-agent task execution through bounded loops, cron discovery and deduplicated triggers.",
-  "description": "A URI-native control plane for Subactor's doctor, repair and validator fleet. It reuses todo-agent discovery, Planfile's OneDev backend and the validated runner, persists generation and retry feedback, and never accepts commands or repository paths from actor payloads.",
+  "summary": "Controls skills-agent capability execution through bounded loops, cron discovery and deduplicated triggers.",
+  "description": "A URI-native control plane for Subactor's doctor, repair and validator fleet. It reuses skills-agent discovery, Planfile's OneDev backend and the validated runner, persists generation and retry feedback, and never accepts commands or repository paths from actor payloads.",
   "useCases": [
-    "Run ready todo-agent task packages from a urirun node",
+    "Run ready skills-agent packages from a urirun node",
     "Drive cron-based maintenance without duplicate schedule slots",
     "Poll and transition Planfile OneDev task tickets with idempotency keys",
     "Queue ticket, repository and webhook triggers with idempotency keys",
@@ -18,10 +18,10 @@
     "subactor-agent://host/loop/session/run",
     "subactor-agent://host/runs/query/list"
   ],
-  "requires": ["python>=3.11", "urirun>=0.4.190", "ifuri-todo-agent>=0.15.1"],
+  "requires": ["python>=3.11", "urirun>=0.4.190", "ifuri-skills-agent>=0.16.0"],
   "install": {
     "mode": "pip",
-    "pipSpec": "urirun-connector-subactor-agent @ git+https://github.com/urirun-connectors/urirun-connector-subactor-agent.git@v0.3.2"
+    "pipSpec": "urirun-connector-subactor-agent @ git+https://github.com/urirun-connectors/urirun-connector-subactor-agent.git@v0.4.0"
   },
   "provenance": "official",
   "publisher": {
@@ -41,5 +41,5 @@
     "subactor-agent://host/tasks/query/discover",
     "subactor-agent://host/trigger/event/emit"
   ],
-  "keywords": ["subactor", "agents", "todo-agent", "cron", "triggers", "control-loop", "urirun"]
+  "keywords": ["subactor", "agents", "skills-agent", "skills", "cron", "triggers", "control-loop", "urirun"]
 }

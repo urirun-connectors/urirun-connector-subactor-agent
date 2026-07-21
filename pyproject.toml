@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "urirun-connector-subactor-agent"
-version = "0.3.2"
-description = "URI-native control loop for Subactor agents executing todo-agent tasks"
+version = "0.4.0"
+description = "URI-native control loop for Subactor agents executing skills-agent capabilities"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -13,7 +13,9 @@ authors = [{name = "if-uri"}]
 dependencies = ["urirun>=0.4.190"]
 
 [project.optional-dependencies]
-todo = ["ifuri-todo-agent @ git+https://github.com/subactor/todo-agent.git@main"]
+skills = ["ifuri-skills-agent @ git+https://github.com/subactor/skills-agent.git@main"]
+# Compatibility extra retained for existing installers.
+todo = ["ifuri-skills-agent @ git+https://github.com/subactor/skills-agent.git@main"]
 test = ["pytest>=9,<10", "ruff>=0.15,<1", "build>=1.2,<2"]
 
 [project.scripts]

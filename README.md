@@ -1,7 +1,7 @@
 # urirun-connector-subactor-agent
 
 Natywny connector `urirun`, który kontroluje flotę agentów Subactor wykonującą
-walidowane pakiety z `todo-agent`. Connector nie zastępuje orkiestratora zadań:
+walidowane pakiety z `skills-agent`. Connector nie zastępuje orkiestratora zadań:
 reużywa jego discovery, kolejności `doctor → repair → validator`, kontraktów JSON
 i bramek mutacji.
 
@@ -19,14 +19,14 @@ i bramek mutacji.
 
 `execute=false` jest wartością domyślną. Payload nigdy nie podaje komendy, ścieżki
 repozytorium ani zmiennych środowiskowych wykonawcy. Repozytorium źródłowe ustala
-operator przez `SUBACTOR_TODO_ROOT`.
+operator przez `SUBACTOR_SKILLS_ROOT`.
 
 ## Instalacja i konfiguracja
 
 ```bash
-python -m pip install 'urirun-connector-subactor-agent[todo] @ git+https://github.com/urirun-connectors/urirun-connector-subactor-agent.git'
+python -m pip install 'urirun-connector-subactor-agent[skills] @ git+https://github.com/urirun-connectors/urirun-connector-subactor-agent.git'
 
-export SUBACTOR_TODO_ROOT=/srv/subactor/todo-agent
+export SUBACTOR_SKILLS_ROOT=/srv/subactor/skills-agent
 export SUBACTOR_AGENT_STATE_DIR=/var/lib/urirun/subactor-agent
 export SUBACTOR_AGENT_ENABLED=true
 ```
@@ -35,7 +35,7 @@ Opcjonalne granice operatora:
 
 | zmienna | domyślnie | znaczenie |
 |---|---:|---|
-| `SUBACTOR_AGENT_ALLOW_APPLY` | `false` | zezwala na `apply_changes=true`; nadal obowiązuje polityka taska `todo-agent` |
+| `SUBACTOR_AGENT_ALLOW_APPLY` | `false` | zezwala na `apply_changes=true`; nadal obowiązuje polityka taska `skills-agent` |
 | `SUBACTOR_AGENT_MAX_TASKS` | `10` | maksymalna liczba faktycznie uruchomionych tasków na cykl |
 | `SUBACTOR_AGENT_MAX_CYCLES` | `100` | maksymalna liczba iteracji jednej sesji loop |
 | `SUBACTOR_AGENT_RETRY_BASE_SECONDS` | `60` | początek wykładniczego backoff |
@@ -46,13 +46,13 @@ Automatyczny backlog Planfile/OneDev włącza pięć zmiennych operatora:
 ```bash
 export SUBACTOR_PLANFILE_BACKEND=onedev
 export SUBACTOR_PLANFILE_ONEDEV_URL=http://onedev:6610
-export SUBACTOR_PLANFILE_ONEDEV_PROJECT=subactor/todo-agent
+export SUBACTOR_PLANFILE_ONEDEV_PROJECT=subactor/skills-agent
 export SUBACTOR_PLANFILE_ONEDEV_USER=onedev-admin
 export SUBACTOR_PLANFILE_ONEDEV_PASSWORD_FILE=/run/secrets/onedev-admin-password
 ```
 
 Connector nie implementuje API OneDev drugi raz. Reużywa
-`planfile.sync.OneDevBackend` udostępniony przez `todo-agent`, synchronizuje
+`planfile.sync.OneDevBackend` udostępniony przez `skills-agent`, synchronizuje
 zadania po trwałym markerze `todo-task:<task_id>`, a następnie wybiera pierwszy
 otwarty ticket zgodny z kontraktem `ready`. Dopiero cykl z `execute=true`
 ustawia ticket jako `In Progress`; receipt `succeeded`, `warning` i `failed`
@@ -73,7 +73,7 @@ Blokady są utrwalane jako `subactor.resolution.blocker/v1` wraz z decyzją
 Stan jest atomowym JSON-em. Przechowuje generację, idempotency receipts, kolejkę
 triggerów, aktywne typowane blokady, ostatnie 200 wyników i licznik porażek. Nie
 przechowuje promptów, tokenów ani pełnych logów agentów; artefakty pozostają w
-`.todo-agent-runs`.
+`.skills-agent-runs`.
 
 ## Przykładowy przepływ
 
@@ -93,7 +93,7 @@ urirun-subactor-agent loop-session-run --max_cycles 1 --execute
 ```
 
 Zewnętrzny cron powinien wywoływać pojedynczy `cycle/command/run` albo krótką
-`loop/session/run`. Slot harmonogramu z `todo-agent` jest częścią klucza receipt,
+`loop/session/run`. Slot harmonogramu z `skills-agent` jest częścią klucza receipt,
 więc ponowne wywołanie tego samego slotu nie uruchomi taska drugi raz.
 
 ## „Infrastruktura ewolucyjna”
@@ -110,7 +110,7 @@ gdzie trwałość już istnieje; bezpośrednie wywołanie orchestratora można d
 po udostępnieniu jego stabilnego runtime API i trwałego rejestru prób.
 
 Connector nie zmienia samodzielnie kodu, allowlist ani polityki. Zmiana produktu
-jest możliwa wyłącznie jako jawny task dopuszczony przez kontrakt `todo-agent`, a
+jest możliwa wyłącznie jako jawny task dopuszczony przez kontrakt `skills-agent`, a
 `apply_changes` wymaga dwóch niezależnych bramek: konfiguracji connectora i
 polityki zadania.
 

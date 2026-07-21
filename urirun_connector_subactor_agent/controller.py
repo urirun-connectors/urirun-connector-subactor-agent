@@ -1,8 +1,9 @@
-"""Deterministic control loop over task packages owned by ``todo-agent``.
+"""Deterministic control loop over skill packages owned by ``skills-agent``.
 
 The connector never accepts a command or a working directory from an actor.  The
-operator configures one todo-agent repository through ``SUBACTOR_TODO_ROOT`` and
-all execution is delegated to todo-agent's validated runner.
+operator configures one skills-agent repository through ``SUBACTOR_SKILLS_ROOT`` and
+all execution is delegated to skills-agent's validated runner. The former
+``SUBACTOR_TODO_ROOT`` variable remains a compatibility alias.
 """
 
 from __future__ import annotations
@@ -80,16 +81,27 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return value
 
 
+def _configured_skills_root() -> str:
+    return (
+        os.environ.get("SUBACTOR_SKILLS_ROOT", "").strip()
+        or os.environ.get("SUBACTOR_TODO_ROOT", "").strip()
+    )
+
+
+def _catalog_ready(root: Path) -> bool:
+    return (root / "SKILLS").is_dir() or (root / "TODO").is_dir()
+
+
 def load_settings(*, require_root: bool = True) -> Settings:
-    raw_root = os.environ.get("SUBACTOR_TODO_ROOT", "").strip()
+    raw_root = _configured_skills_root()
     if not raw_root:
         if require_root:
-            raise ConfigurationError("SUBACTOR_TODO_ROOT is not configured")
+            raise ConfigurationError("SUBACTOR_SKILLS_ROOT is not configured")
         root = Path(".").resolve()
     else:
         root = Path(raw_root).expanduser().resolve()
-    if require_root and (not root.is_dir() or not (root / "TODO").is_dir()):
-        raise ConfigurationError("SUBACTOR_TODO_ROOT must contain a TODO directory")
+    if require_root and (not root.is_dir() or not _catalog_ready(root)):
+        raise ConfigurationError("SUBACTOR_SKILLS_ROOT must contain a SKILLS directory")
 
     raw_state = os.environ.get("SUBACTOR_AGENT_STATE_DIR", "").strip()
     state_dir = (
@@ -209,19 +221,19 @@ def _cycle_lease(settings: Settings) -> Iterator[None]:
 
 
 def _todo_api() -> tuple[Callable[..., list[dict[str, Any]]], Callable[..., tuple[dict[str, Any], Path]]]:
-    """Lazy dependency boundary: connector discovery works without importing todo-agent."""
+    """Lazy boundary using the stable internal ``todo_agent`` compatibility module."""
     try:
         from todo_agent.discovery import discover_tasks
         from todo_agent.runner import run_task
     except ImportError as exc:
         raise ConfigurationError(
-            "ifuri-todo-agent is not installed; install urirun-connector-subactor-agent[todo]"
+            "ifuri-skills-agent is not installed; install urirun-connector-subactor-agent[skills]"
         ) from exc
     return discover_tasks, run_task
 
 
 def _todo_planfile_api() -> tuple[Callable[..., Any], Callable[..., Any], Callable[..., Any]]:
-    """Lazy Planfile registry boundary owned by todo-agent."""
+    """Lazy Planfile registry boundary owned by skills-agent."""
     try:
         from todo_agent.planfile_backend import (
             next_backend_task,
@@ -229,7 +241,7 @@ def _todo_planfile_api() -> tuple[Callable[..., Any], Callable[..., Any], Callab
             sync_tasks_to_backend,
         )
     except ImportError as exc:
-        raise ConfigurationError("todo-agent Planfile backend integration is unavailable") from exc
+        raise ConfigurationError("skills-agent Planfile backend integration is unavailable") from exc
     return sync_tasks_to_backend, next_backend_task, set_backend_task_status
 
 
@@ -251,7 +263,7 @@ def _planfile_registry(settings: Settings) -> Any:
     try:
         from todo_agent.planfile_backend import open_onedev_backend
     except ImportError as exc:
-        raise ConfigurationError("todo-agent Planfile OneDev integration is unavailable") from exc
+        raise ConfigurationError("skills-agent Planfile OneDev integration is unavailable") from exc
     try:
         return open_onedev_backend(
             url=settings.planfile_onedev_url,
@@ -416,7 +428,7 @@ def _valid_trigger(kind: str) -> str:
 
 
 def _retryable_error(exc: Exception) -> bool:
-    """Classify policy/contract causes without importing todo-agent eagerly."""
+    """Classify policy/contract causes without importing skills-agent eagerly."""
     current: BaseException | None = exc
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
@@ -699,7 +711,7 @@ def run_cycle(
                         "retry_at": receipt.get("retry_at"),
                     }
                 )
-            except Exception as exc:  # todo-agent errors become stateful retry feedback
+            except Exception as exc:  # skills-agent errors become stateful retry feedback
                 retryable = _retryable_error(exc)
                 receipt = _finish(
                     store,
@@ -911,9 +923,9 @@ def runs(*, limit: int = 20) -> dict[str, Any]:
 
 
 def doctor() -> dict[str, Any]:
-    raw_root = os.environ.get("SUBACTOR_TODO_ROOT", "").strip()
+    raw_root = _configured_skills_root()
     configured = bool(raw_root)
-    root_ready = configured and Path(raw_root).expanduser().resolve().joinpath("TODO").is_dir()
+    root_ready = configured and _catalog_ready(Path(raw_root).expanduser().resolve())
     dependency_ready = True
     dependency_error = ""
     try:
@@ -935,10 +947,13 @@ def doctor() -> dict[str, Any]:
         "status": "ready" if root_ready and dependency_ready and planfile_ready else "not_ready",
         "configured": configured,
         "root_ready": root_ready,
+        "skills_agent_ready": dependency_ready,
         "todo_agent_ready": dependency_ready,
         "execution_enabled": _env_bool("SUBACTOR_AGENT_ENABLED"),
         "apply_enabled": _env_bool("SUBACTOR_AGENT_ALLOW_APPLY"),
         "planfile_backend": planfile_backend or None,
         "planfile_ready": planfile_ready,
-        "reason": planfile_error or dependency_error or ("" if root_ready else "SUBACTOR_TODO_ROOT is missing or invalid"),
+        "reason": planfile_error
+        or dependency_error
+        or ("" if root_ready else "SUBACTOR_SKILLS_ROOT is missing or invalid"),
     }
