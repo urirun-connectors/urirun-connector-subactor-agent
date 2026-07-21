@@ -1,0 +1,43 @@
+{
+  "id": "subactor-agent",
+  "name": "Subactor Agent Control Loop",
+  "status": "stable",
+  "category": "Automation",
+  "summary": "Controls todo-agent task execution through bounded loops, cron discovery and deduplicated triggers.",
+  "description": "A URI-native control plane for Subactor's doctor, repair and validator fleet. It reuses todo-agent discovery and its validated runner, persists generation and retry feedback, and never accepts commands or repository paths from actor payloads.",
+  "useCases": [
+    "Run ready todo-agent task packages from a urirun node",
+    "Drive cron-based maintenance without duplicate schedule slots",
+    "Queue ticket, repository and webhook triggers with idempotency keys",
+    "Inspect generations, run receipts and deterministic retry backoff"
+  ],
+  "flowExample": [
+    "subactor-agent://host/trigger/event/emit",
+    "subactor-agent://host/loop/session/run",
+    "subactor-agent://host/runs/query/list"
+  ],
+  "requires": ["python>=3.11", "urirun>=0.4.190", "ifuri-todo-agent>=0.14.3"],
+  "install": {
+    "mode": "pip",
+    "pipSpec": "git+https://github.com/urirun-connectors/urirun-connector-subactor-agent.git"
+  },
+  "provenance": "official",
+  "publisher": {
+    "name": "urirun-connectors",
+    "url": "https://github.com/urirun-connectors"
+  },
+  "docsUrl": "https://github.com/urirun-connectors/urirun-connector-subactor-agent",
+  "language": "python",
+  "uriSchemes": ["subactor-agent"],
+  "adapterKinds": ["local-function"],
+  "routes": [
+    "subactor-agent://host/cycle/command/run",
+    "subactor-agent://host/doctor/query/report",
+    "subactor-agent://host/loop/session/run",
+    "subactor-agent://host/runs/query/list",
+    "subactor-agent://host/state/query/status",
+    "subactor-agent://host/tasks/query/discover",
+    "subactor-agent://host/trigger/event/emit"
+  ],
+  "keywords": ["subactor", "agents", "todo-agent", "cron", "triggers", "control-loop", "urirun"]
+}

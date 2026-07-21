@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "urirun-connector-subactor-agent"
+version = "0.1.0"
+description = "URI-native control loop for Subactor agents executing todo-agent tasks"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{name = "if-uri"}]
+dependencies = ["urirun>=0.4.190"]
+
+[project.optional-dependencies]
+todo = ["ifuri-todo-agent @ git+https://github.com/subactor/todo-agent.git@main"]
+test = ["pytest>=9,<10", "ruff>=0.15,<1", "build>=1.2,<2"]
+
+[project.scripts]
+urirun-subactor-agent = "urirun_connector_subactor_agent.core:main"
+
+[project.entry-points."urirun.bindings"]
+subactor-agent = "urirun_connector_subactor_agent.core:urirun_bindings"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["urirun_connector_subactor_agent*"]
+
+[tool.setuptools.package-data]
+urirun_connector_subactor_agent = ["connector.manifest.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]

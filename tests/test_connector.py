@@ -1,0 +1,180 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from urirun_connector_subactor_agent import controller, core
+
+ROUTES = {
+    "subactor-agent://host/cycle/command/run",
+    "subactor-agent://host/doctor/query/report",
+    "subactor-agent://host/loop/session/run",
+    "subactor-agent://host/runs/query/list",
+    "subactor-agent://host/state/query/status",
+    "subactor-agent://host/tasks/query/discover",
+    "subactor-agent://host/trigger/event/emit",
+}
+
+
+@pytest.fixture
+def configured(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path]:
+    root = tmp_path / "todo-agent"
+    (root / "TODO").mkdir(parents=True)
+    state = tmp_path / "state"
+    monkeypatch.setenv("SUBACTOR_TODO_ROOT", str(root))
+    monkeypatch.setenv("SUBACTOR_AGENT_STATE_DIR", str(state))
+    monkeypatch.delenv("SUBACTOR_AGENT_ENABLED", raising=False)
+    monkeypatch.delenv("SUBACTOR_AGENT_ALLOW_APPLY", raising=False)
+    return root, state
+
+
+def _fake_api(tasks: list[dict], *, status: str = "succeeded", calls: list | None = None):
+    def discover_tasks(root, *, event, task_id, now_utc):
+        selected = [item for item in tasks if not task_id or item["task_id"] == task_id]
+        return selected if event in {"manual", "schedule"} else []
+
+    def run_task(root, task_id, *, apply_changes):
+        if calls is not None:
+            calls.append((root, task_id, apply_changes))
+        return {"status": status, "correlation_id": f"todo-agent:{task_id}:run"}, root / ".todo-agent-runs" / task_id / "run"
+
+    return discover_tasks, run_task
+
+
+def test_bindings_are_complete_and_serializable() -> None:
+    document = core.urirun_bindings()
+    assert set(document["bindings"]) == ROUTES
+    json.dumps(document)
+    for uri, binding in document["bindings"].items():
+        if "/query/" in uri:
+            assert binding["adapter"] == "local-function"
+        else:
+            assert binding["adapter"] == "local-function-subprocess"
+
+
+def test_import_is_lazy_and_does_not_import_todo_agent() -> None:
+    script = "import sys; import urirun_connector_subactor_agent.core; print(any(k == 'todo_agent' or k.startswith('todo_agent.') for k in sys.modules))"
+    completed = subprocess.run([sys.executable, "-c", script], check=True, capture_output=True, text=True)
+    assert completed.stdout.strip() == "False"
+
+
+def test_discovery_maps_external_trigger_to_manual(configured, monkeypatch: pytest.MonkeyPatch) -> None:
+    tasks = [{"task_id": "0042", "schedule_slot": "manual"}]
+    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api(tasks))
+
+    result = core.tasks_discover(event="ticket", task_id="0042")
+
+    assert result["ok"] is True
+    assert result["discovery_event"] == "manual"
+    assert result["tasks"] == tasks
+
+
+def test_cycle_is_dry_run_by_default(configured, monkeypatch: pytest.MonkeyPatch) -> None:
+    tasks = [{"task_id": "0042", "schedule_slot": "2026-07-21T08:00:00Z"}]
+    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api(tasks))
+
+    result = core.cycle_run(trigger="schedule", now="2026-07-21T08:00:00Z")
+
+    assert result["ok"] is True
+    assert result["execute"] is False
+    assert result["results"][0]["status"] == "planned"
+
+
+def test_execution_requires_operator_gate(configured, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api([]))
+    result = core.cycle_run(trigger="manual", execute=True)
+    assert result["ok"] is False
+    assert "SUBACTOR_AGENT_ENABLED" in str(result["error"])
+
+
+def test_schedule_slot_is_executed_once(configured, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, _ = configured
+    calls: list = []
+    tasks = [{"task_id": "0042", "schedule_slot": "2026-07-21T08:00:00Z"}]
+    monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
+    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api(tasks, calls=calls))
+
+    first = core.cycle_run(trigger="schedule", execute=True, now="2026-07-21T08:00:00Z")
+    second = core.cycle_run(trigger="schedule", execute=True, now="2026-07-21T08:00:30Z")
+
+    assert first["ok"] and first["results"][0]["status"] == "succeeded"
+    assert second["ok"] and second["results"][0]["reason"] == "already_succeeded"
+    assert calls == [(root, "0042", False)]
+
+
+def test_trigger_is_deduplicated_and_loop_prioritizes_it(configured, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list = []
+    tasks = [{"task_id": "0042", "schedule_slot": "manual"}]
+    monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
+    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api(tasks, calls=calls))
+
+    first = core.trigger_emit(kind="ticket", event_id="PLF-42", task_id="0042", context={"ticket_id": "PLF-42"})
+    duplicate = core.trigger_emit(kind="ticket", event_id="PLF-42", task_id="0042")
+    loop = controller.run_loop(max_cycles=1, interval_seconds=0, execute=True)
+    state = controller.status()
+
+    assert first["ok"] and first["deduplicated"] is False
+    assert duplicate["deduplicated"] is True
+    assert loop["cycles"][0]["trigger"] == "ticket"
+    assert calls and state["queue_depth"] == 0
+
+
+def test_loop_progresses_across_more_tasks_than_cycle_limit(configured, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list = []
+    tasks = [
+        {"task_id": "0042", "schedule_slot": "manual"},
+        {"task_id": "0043", "schedule_slot": "manual"},
+    ]
+    monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
+    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api(tasks, calls=calls))
+    controller.emit_trigger(kind="repository", event_id="push-1")
+
+    result = controller.run_loop(max_cycles=2, interval_seconds=0, max_tasks=1, execute=True)
+
+    assert [item[1] for item in calls] == ["0042", "0043"]
+    assert result["cycles"][-1]["completed"] is True
+    assert controller.status()["queue_depth"] == 0
+
+
+def test_failed_task_gets_backoff_and_event_stays_pending(configured, monkeypatch: pytest.MonkeyPatch) -> None:
+    tasks = [{"task_id": "0042", "schedule_slot": "manual"}]
+    monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
+    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api(tasks, status="failed"))
+    controller.emit_trigger(kind="webhook", event_id="hook-1", task_id="0042")
+
+    first = controller.run_loop(max_cycles=1, interval_seconds=0, execute=True)["cycles"][0]
+    second = controller.run_loop(max_cycles=1, interval_seconds=0, execute=True)["cycles"][0]
+
+    assert first["results"][0]["status"] == "failed"
+    assert first["results"][0]["retry_at"]
+    assert second["results"][0]["reason"] == "retry_backoff"
+    assert second["completed"] is False
+    assert controller.status()["queue_depth"] == 1
+
+
+def test_apply_changes_has_a_separate_gate(configured, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
+    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api([]))
+    result = core.cycle_run(trigger="manual", execute=True, apply_changes=True)
+    assert result["ok"] is False
+    assert "SUBACTOR_AGENT_ALLOW_APPLY" in str(result["error"])
+
+
+def test_payload_cannot_supply_commands_paths_or_environment(configured) -> None:
+    assert core.trigger_emit(kind="webhook", event_id="ok", context={"command": "rm -rf /"})["ok"] is False
+    with pytest.raises(TypeError):
+        core.cycle_run(root="/tmp/other")
+    with pytest.raises(TypeError):
+        core.cycle_run(command="python arbitrary.py")
+
+
+def test_read_handlers_return_failure_envelopes_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SUBACTOR_TODO_ROOT", raising=False)
+    assert core.tasks_discover()["ok"] is False
+    assert core.state_status()["ok"] is False
+    assert core.doctor_report()["ok"] is True
+    assert core.doctor_report()["status"] == "not_ready"
