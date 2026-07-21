@@ -27,8 +27,8 @@ def test_package_and_connector_manifest_versions_match() -> None:
         Path("urirun_connector_subactor_agent/connector.manifest.json").read_text(encoding="utf-8")
     )
 
-    assert project["project"]["version"] == manifest["version"] == "0.3.1"
-    assert manifest["install"]["pipSpec"].endswith("@v0.3.1")
+    assert project["project"]["version"] == manifest["version"] == "0.3.2"
+    assert manifest["install"]["pipSpec"].endswith("@v0.3.2")
     assert "ifuri-todo-agent>=0.15.1" in manifest["requires"]
 
 
@@ -447,6 +447,19 @@ def test_failed_task_gets_backoff_and_event_stays_pending(configured, monkeypatc
     assert second["results"][0]["reason"] == "retry_backoff"
     assert second["completed"] is False
     assert controller.status()["queue_depth"] == 1
+
+
+def test_successful_retry_clears_stale_task_health_retry_at(configured) -> None:
+    _, state_dir = configured
+    settings = controller.load_settings()
+    store = controller.StateStore(state_dir)
+
+    controller._finish(store, settings, key="retry:0042", task_id="0042", attempts=1, status="failed")
+    assert controller.status()["task_health"]["0042"]["retry_at"]
+
+    controller._finish(store, settings, key="retry:0042", task_id="0042", attempts=2, status="succeeded")
+
+    assert "retry_at" not in controller.status()["task_health"]["0042"]
 
 
 def test_apply_changes_has_a_separate_gate(configured, monkeypatch: pytest.MonkeyPatch) -> None:

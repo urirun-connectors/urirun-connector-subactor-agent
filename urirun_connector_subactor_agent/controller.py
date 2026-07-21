@@ -598,6 +598,7 @@ def _finish(
             receipt["error"] = error[:500]
         if status in {"succeeded", "warning"}:
             health.update({"failures": 0, "last_status": status, "last_success_at": receipt["finished_at"]})
+            health.pop("retry_at", None)
         else:
             failures = int(health.get("failures", 0)) + 1
             delay = min(settings.retry_base_seconds * (2 ** (failures - 1)), settings.retry_max_seconds)
