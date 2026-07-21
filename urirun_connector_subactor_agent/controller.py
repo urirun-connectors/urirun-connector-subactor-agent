@@ -7,6 +7,7 @@ all execution is delegated to todo-agent's validated runner.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -51,6 +52,11 @@ class Settings:
     max_cycles: int
     retry_base_seconds: int
     retry_max_seconds: int
+    planfile_backend: str
+    planfile_onedev_url: str
+    planfile_onedev_project: str
+    planfile_onedev_user: str
+    planfile_onedev_password_file: str
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -97,6 +103,11 @@ def load_settings(*, require_root: bool = True) -> Settings:
         max_cycles=_env_int("SUBACTOR_AGENT_MAX_CYCLES", 100, 1, 1000),
         retry_base_seconds=_env_int("SUBACTOR_AGENT_RETRY_BASE_SECONDS", 60, 1, 86400),
         retry_max_seconds=_env_int("SUBACTOR_AGENT_RETRY_MAX_SECONDS", 3600, 1, 604800),
+        planfile_backend=os.environ.get("SUBACTOR_PLANFILE_BACKEND", "").strip().lower(),
+        planfile_onedev_url=os.environ.get("SUBACTOR_PLANFILE_ONEDEV_URL", "").strip(),
+        planfile_onedev_project=os.environ.get("SUBACTOR_PLANFILE_ONEDEV_PROJECT", "").strip(),
+        planfile_onedev_user=os.environ.get("SUBACTOR_PLANFILE_ONEDEV_USER", "").strip(),
+        planfile_onedev_password_file=os.environ.get("SUBACTOR_PLANFILE_ONEDEV_PASSWORD_FILE", "").strip(),
     )
 
 
@@ -203,6 +214,125 @@ def _todo_api() -> tuple[Callable[..., list[dict[str, Any]]], Callable[..., tupl
             "ifuri-todo-agent is not installed; install urirun-connector-subactor-agent[todo]"
         ) from exc
     return discover_tasks, run_task
+
+
+def _todo_planfile_api() -> tuple[Callable[..., Any], Callable[..., Any], Callable[..., Any]]:
+    """Lazy Planfile registry boundary owned by todo-agent."""
+    try:
+        from todo_agent.planfile_backend import (
+            next_backend_task,
+            set_backend_task_status,
+            sync_tasks_to_backend,
+        )
+    except ImportError as exc:
+        raise ConfigurationError("todo-agent Planfile backend integration is unavailable") from exc
+    return sync_tasks_to_backend, next_backend_task, set_backend_task_status
+
+
+def _planfile_registry(settings: Settings) -> Any:
+    if settings.planfile_backend != "onedev":
+        raise ConfigurationError("SUBACTOR_PLANFILE_BACKEND must be 'onedev' when configured")
+    required = {
+        "SUBACTOR_PLANFILE_ONEDEV_URL": settings.planfile_onedev_url,
+        "SUBACTOR_PLANFILE_ONEDEV_PROJECT": settings.planfile_onedev_project,
+        "SUBACTOR_PLANFILE_ONEDEV_USER": settings.planfile_onedev_user,
+        "SUBACTOR_PLANFILE_ONEDEV_PASSWORD_FILE": settings.planfile_onedev_password_file,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise ConfigurationError(f"missing Planfile OneDev settings: {', '.join(missing)}")
+    password_file = Path(settings.planfile_onedev_password_file).expanduser().resolve()
+    if not password_file.is_file():
+        raise ConfigurationError("SUBACTOR_PLANFILE_ONEDEV_PASSWORD_FILE is not a file")
+    try:
+        from todo_agent.planfile_backend import open_onedev_backend
+    except ImportError as exc:
+        raise ConfigurationError("todo-agent Planfile OneDev integration is unavailable") from exc
+    try:
+        return open_onedev_backend(
+            url=settings.planfile_onedev_url,
+            project=settings.planfile_onedev_project,
+            username=settings.planfile_onedev_user,
+            password_file=str(password_file),
+        )
+    except Exception as exc:
+        raise ConfigurationError(f"Planfile OneDev backend is unavailable: {type(exc).__name__}: {exc}") from exc
+
+
+def _planfile_event_id(ticket: dict[str, Any]) -> str:
+    identity = f"{ticket['ticket_id']}|{ticket.get('updated_at', '')}"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return f"planfile:{ticket['ticket_id']}:{digest}"
+
+
+def _pending_planfile_ticket(store: StateStore, ticket_id: str) -> bool:
+    return any(
+        str((event.get("context") or {}).get("ticket_id") or "") == ticket_id
+        for event in store.read().get("pending_events", [])
+        if isinstance(event, dict)
+    )
+
+
+def _poll_planfile(settings: Settings, store: StateStore) -> dict[str, Any] | None:
+    if not settings.planfile_backend:
+        return None
+    backend = _planfile_registry(settings)
+    sync_tasks, next_task, _ = _todo_planfile_api()
+    synced = sync_tasks(settings.root, backend)
+    ticket = next_task(settings.root, backend)
+    if not ticket:
+        return {"synced": len(synced), "ticket": None}
+    ticket_id = str(ticket["ticket_id"])
+    if _pending_planfile_ticket(store, ticket_id):
+        return {"synced": len(synced), "ticket": ticket_id, "action": "already-pending"}
+    event_id = _planfile_event_id(ticket)
+    emitted = emit_trigger(
+        kind="ticket",
+        event_id=event_id,
+        task_id=str(ticket["task_id"]),
+        context={"source": "planfile", "ticket_id": ticket_id},
+    )
+    return {
+        "synced": len(synced),
+        "ticket": ticket_id,
+        "task_id": str(ticket["task_id"]),
+        "event_id": event_id,
+        "action": "deduplicated" if emitted["deduplicated"] else "enqueued",
+    }
+
+
+def _set_planfile_event_status(
+    settings: Settings,
+    event: dict[str, Any],
+    status: str,
+) -> dict[str, Any] | None:
+    context = event.get("context") if isinstance(event.get("context"), dict) else {}
+    if context.get("source") != "planfile" or not context.get("ticket_id"):
+        return None
+    backend = _planfile_registry(settings)
+    _, _, set_status = _todo_planfile_api()
+    ticket_id = str(context["ticket_id"])
+    set_status(backend, ticket_id, status)
+    return {"ticket": ticket_id, "status": status}
+
+
+def _finish_planfile_event(settings: Settings, event: dict[str, Any], cycle: dict[str, Any]) -> dict[str, Any] | None:
+    context = event.get("context") if isinstance(event.get("context"), dict) else {}
+    if context.get("source") != "planfile" or not context.get("ticket_id"):
+        return None
+    results = cycle.get("results") if isinstance(cycle.get("results"), list) else []
+    statuses = {str(item.get("status")) for item in results if isinstance(item, dict)}
+    if "failed" in statuses:
+        target = "open"
+    elif "warning" in statuses:
+        target = "review"
+    elif cycle.get("completed") and "succeeded" in statuses:
+        target = "done"
+    elif cycle.get("completed"):
+        target = "review"
+    else:
+        return None
+    return _set_planfile_event_status(settings, event, target)
 
 
 def _parse_now(value: str = "") -> datetime:
@@ -565,20 +695,39 @@ def run_loop(
         raise ControllerError("interval_seconds must be a number") from exc
     if interval < 0 or interval > 3600:
         raise ControllerError("interval_seconds must be between 0 and 3600")
+    if execute and not settings.enabled:
+        raise ConfigurationError("execution is disabled; set SUBACTOR_AGENT_ENABLED=true")
+    if apply_changes and (not execute or not settings.allow_apply):
+        raise ConfigurationError("apply_changes requires execute=true and SUBACTOR_AGENT_ALLOW_APPLY=true")
 
     store = StateStore(settings.state_dir)
     cycles: list[dict[str, Any]] = []
     for index in range(max_cycles):
         event = _next_pending(store)
+        registry = None
+        if event is None:
+            registry = _poll_planfile(settings, store)
+            event = _next_pending(store)
         if event:
-            cycle = run_cycle(
-                trigger=str(event["kind"]),
-                trigger_id=str(event["id"]),
-                task_id=str(event.get("task_id") or ""),
-                max_tasks=max_tasks,
-                execute=execute,
-                apply_changes=apply_changes,
-            )
+            started = _set_planfile_event_status(settings, event, "in_progress") if execute else None
+            try:
+                cycle = run_cycle(
+                    trigger=str(event["kind"]),
+                    trigger_id=str(event["id"]),
+                    task_id=str(event.get("task_id") or ""),
+                    max_tasks=max_tasks,
+                    execute=execute,
+                    apply_changes=apply_changes,
+                )
+            except Exception:
+                if started:
+                    _set_planfile_event_status(settings, event, "open")
+                raise
+            if started:
+                cycle["planfile_started"] = started
+            transition = _finish_planfile_event(settings, event, cycle)
+            if transition:
+                cycle["planfile_transition"] = transition
         else:
             cycle = run_cycle(
                 trigger="schedule",
@@ -586,6 +735,8 @@ def run_loop(
                 execute=execute,
                 apply_changes=apply_changes,
             )
+        if registry:
+            cycle["planfile_registry"] = registry
         cycles.append(cycle)
         if index + 1 < max_cycles:
             sleep(interval)
@@ -604,6 +755,7 @@ def status() -> dict[str, Any]:
         "last_cycle": state.get("last_cycle"),
         "enabled": settings.enabled,
         "allow_apply": settings.allow_apply,
+        "planfile_backend": settings.planfile_backend or None,
     }
 
 
@@ -627,12 +779,24 @@ def doctor() -> dict[str, Any]:
     except ControllerError as exc:
         dependency_ready = False
         dependency_error = str(exc)
+    planfile_backend = os.environ.get("SUBACTOR_PLANFILE_BACKEND", "").strip().lower()
+    planfile_ready = not planfile_backend
+    planfile_error = ""
+    if planfile_backend:
+        try:
+            _planfile_registry(load_settings(require_root=False))
+            _todo_planfile_api()
+            planfile_ready = True
+        except ControllerError as exc:
+            planfile_error = str(exc)
     return {
-        "status": "ready" if root_ready and dependency_ready else "not_ready",
+        "status": "ready" if root_ready and dependency_ready and planfile_ready else "not_ready",
         "configured": configured,
         "root_ready": root_ready,
         "todo_agent_ready": dependency_ready,
         "execution_enabled": _env_bool("SUBACTOR_AGENT_ENABLED"),
         "apply_enabled": _env_bool("SUBACTOR_AGENT_ALLOW_APPLY"),
-        "reason": dependency_error or ("" if root_ready else "SUBACTOR_TODO_ROOT is missing or invalid"),
+        "planfile_backend": planfile_backend or None,
+        "planfile_ready": planfile_ready,
+        "reason": planfile_error or dependency_error or ("" if root_ready else "SUBACTOR_TODO_ROOT is missing or invalid"),
     }

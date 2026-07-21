@@ -41,6 +41,24 @@ Opcjonalne granice operatora:
 | `SUBACTOR_AGENT_RETRY_BASE_SECONDS` | `60` | początek wykładniczego backoff |
 | `SUBACTOR_AGENT_RETRY_MAX_SECONDS` | `3600` | górna granica backoff |
 
+Automatyczny backlog Planfile/OneDev włącza pięć zmiennych operatora:
+
+```bash
+export SUBACTOR_PLANFILE_BACKEND=onedev
+export SUBACTOR_PLANFILE_ONEDEV_URL=http://onedev:6610
+export SUBACTOR_PLANFILE_ONEDEV_PROJECT=subactor/todo-agent
+export SUBACTOR_PLANFILE_ONEDEV_USER=onedev-admin
+export SUBACTOR_PLANFILE_ONEDEV_PASSWORD_FILE=/run/secrets/onedev-admin-password
+```
+
+Connector nie implementuje API OneDev drugi raz. Reużywa
+`planfile.sync.OneDevBackend` udostępniony przez `todo-agent`, synchronizuje
+zadania po trwałym markerze `todo-task:<task_id>`, a następnie wybiera pierwszy
+otwarty ticket zgodny z kontraktem `ready`. Dopiero cykl z `execute=true`
+ustawia ticket jako `In Progress`; receipt `succeeded`, `warning` i `failed`
+przechodzi odpowiednio do `Closed`, `In Review` i ponownie `Open`. Podgląd
+`execute=false` nie zmienia statusu ticketu.
+
 Stan jest atomowym JSON-em. Przechowuje generację, idempotency receipts, kolejkę
 triggerów, ostatnie 200 wyników i licznik porażek. Nie przechowuje promptów,
 tokenów ani pełnych logów agentów; artefakty pozostają w `.todo-agent-runs`.

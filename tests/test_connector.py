@@ -29,6 +29,14 @@ def configured(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, P
     monkeypatch.setenv("SUBACTOR_AGENT_STATE_DIR", str(state))
     monkeypatch.delenv("SUBACTOR_AGENT_ENABLED", raising=False)
     monkeypatch.delenv("SUBACTOR_AGENT_ALLOW_APPLY", raising=False)
+    for name in (
+        "SUBACTOR_PLANFILE_BACKEND",
+        "SUBACTOR_PLANFILE_ONEDEV_URL",
+        "SUBACTOR_PLANFILE_ONEDEV_PROJECT",
+        "SUBACTOR_PLANFILE_ONEDEV_USER",
+        "SUBACTOR_PLANFILE_ONEDEV_PASSWORD_FILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
     return root, state
 
 
@@ -140,6 +148,106 @@ def test_trigger_rejects_non_object_json_context(configured) -> None:
 
     assert result["ok"] is False
     assert "must encode an object" in result["error"]
+
+
+def test_planfile_ticket_is_enqueued_executed_and_completed(configured, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, _ = configured
+    calls: list = []
+    transitions: list[tuple[str, str]] = []
+    backend = object()
+    monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SUBACTOR_PLANFILE_BACKEND", "onedev")
+    monkeypatch.setattr(controller, "_planfile_registry", lambda settings: backend)
+    monkeypatch.setattr(controller, "_todo_api", lambda: _fake_api([{"task_id": "0042", "schedule_slot": "manual"}], calls=calls))
+    monkeypatch.setattr(
+        controller,
+        "_todo_planfile_api",
+        lambda: (
+            lambda repo_root, selected_backend: [{"task_id": "0042"}],
+            lambda repo_root, selected_backend: {
+                "ticket_id": "91",
+                "task_id": "0042",
+                "status": "open",
+                "updated_at": "2026-07-21T12:00:00Z",
+            },
+            lambda selected_backend, ticket_id, status: transitions.append((ticket_id, status)),
+        ),
+    )
+
+    result = controller.run_loop(max_cycles=1, interval_seconds=0, execute=True)
+
+    cycle = result["cycles"][0]
+    assert calls == [(root, "0042", False)]
+    assert transitions == [("91", "in_progress"), ("91", "done")]
+    assert cycle["trigger"] == "ticket"
+    assert cycle["planfile_registry"]["action"] == "enqueued"
+    assert cycle["planfile_transition"] == {"ticket": "91", "status": "done"}
+    assert controller.status()["queue_depth"] == 0
+
+
+def test_planfile_preview_keeps_ticket_open(configured, monkeypatch: pytest.MonkeyPatch) -> None:
+    transitions: list[tuple[str, str]] = []
+    backend = object()
+    monkeypatch.setenv("SUBACTOR_PLANFILE_BACKEND", "onedev")
+    monkeypatch.setattr(controller, "_planfile_registry", lambda settings: backend)
+    monkeypatch.setattr(
+        controller,
+        "_todo_api",
+        lambda: _fake_api([{"task_id": "0042", "schedule_slot": "manual"}]),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_todo_planfile_api",
+        lambda: (
+            lambda repo_root, selected_backend: [{"task_id": "0042"}],
+            lambda repo_root, selected_backend: {
+                "ticket_id": "93",
+                "task_id": "0042",
+                "status": "open",
+                "updated_at": "2026-07-21T12:02:00Z",
+            },
+            lambda selected_backend, ticket_id, status: transitions.append((ticket_id, status)),
+        ),
+    )
+
+    result = controller.run_loop(max_cycles=1, interval_seconds=0, execute=False)
+
+    assert result["cycles"][0]["results"][0]["status"] == "planned"
+    assert transitions == []
+    assert controller.status()["queue_depth"] == 1
+
+
+def test_failed_planfile_ticket_reopens_and_keeps_retry_event(configured, monkeypatch: pytest.MonkeyPatch) -> None:
+    transitions: list[tuple[str, str]] = []
+    backend = object()
+    monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SUBACTOR_PLANFILE_BACKEND", "onedev")
+    monkeypatch.setattr(controller, "_planfile_registry", lambda settings: backend)
+    monkeypatch.setattr(
+        controller,
+        "_todo_api",
+        lambda: _fake_api([{"task_id": "0042", "schedule_slot": "manual"}], status="failed"),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_todo_planfile_api",
+        lambda: (
+            lambda repo_root, selected_backend: [],
+            lambda repo_root, selected_backend: {
+                "ticket_id": "92",
+                "task_id": "0042",
+                "status": "open",
+                "updated_at": "2026-07-21T12:01:00Z",
+            },
+            lambda selected_backend, ticket_id, status: transitions.append((ticket_id, status)),
+        ),
+    )
+
+    result = controller.run_loop(max_cycles=1, interval_seconds=0, execute=True)
+
+    assert result["cycles"][0]["results"][0]["status"] == "failed"
+    assert transitions == [("92", "in_progress"), ("92", "open")]
+    assert controller.status()["queue_depth"] == 1
 
 
 def test_loop_progresses_across_more_tasks_than_cycle_limit(configured, monkeypatch: pytest.MonkeyPatch) -> None:

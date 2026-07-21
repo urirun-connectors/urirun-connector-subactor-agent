@@ -4,10 +4,11 @@
   "status": "stable",
   "category": "Automation",
   "summary": "Controls todo-agent task execution through bounded loops, cron discovery and deduplicated triggers.",
-  "description": "A URI-native control plane for Subactor's doctor, repair and validator fleet. It reuses todo-agent discovery and its validated runner, persists generation and retry feedback, and never accepts commands or repository paths from actor payloads.",
+  "description": "A URI-native control plane for Subactor's doctor, repair and validator fleet. It reuses todo-agent discovery, Planfile's OneDev backend and the validated runner, persists generation and retry feedback, and never accepts commands or repository paths from actor payloads.",
   "useCases": [
     "Run ready todo-agent task packages from a urirun node",
     "Drive cron-based maintenance without duplicate schedule slots",
+    "Poll and transition Planfile OneDev task tickets with idempotency keys",
     "Queue ticket, repository and webhook triggers with idempotency keys",
     "Inspect generations, run receipts and deterministic retry backoff"
   ],
@@ -16,7 +17,7 @@
     "subactor-agent://host/loop/session/run",
     "subactor-agent://host/runs/query/list"
   ],
-  "requires": ["python>=3.11", "urirun>=0.4.190", "ifuri-todo-agent>=0.14.3"],
+  "requires": ["python>=3.11", "urirun>=0.4.190", "ifuri-todo-agent>=0.15.0"],
   "install": {
     "mode": "pip",
     "pipSpec": "git+https://github.com/urirun-connectors/urirun-connector-subactor-agent.git"
