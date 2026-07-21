@@ -63,9 +63,17 @@ Błąd kontraktu, bezpieczeństwa lub zakresu celu nie jest retryowany w pętli:
 ticket przechodzi do `In Review`, a kolejka może podjąć następne zadanie. Błędy
 wykonawcze i zależności pozostają retryowalne (`Open` + backoff).
 
+Odroczony retry nie blokuje kolejki: jego ticket pozostaje `Open`, ale connector
+wyklucza go z kolejnego wyboru do czasu `retry_at` i podejmuje następny otwarty
+ticket. Gdy Planfile nie ma pracy, connector raportuje jawny stan idle i nie
+wraca do lokalnego harmonogramu, który mógłby ponownie wykonać zakończone zadanie.
+Blokady są utrwalane jako `subactor.resolution.blocker/v1` wraz z decyzją
+`continue_unblocked`, zgodną z polityką ciągłości `subactor/orchestrator`.
+
 Stan jest atomowym JSON-em. Przechowuje generację, idempotency receipts, kolejkę
-triggerów, ostatnie 200 wyników i licznik porażek. Nie przechowuje promptów,
-tokenów ani pełnych logów agentów; artefakty pozostają w `.todo-agent-runs`.
+triggerów, aktywne typowane blokady, ostatnie 200 wyników i licznik porażek. Nie
+przechowuje promptów, tokenów ani pełnych logów agentów; artefakty pozostają w
+`.todo-agent-runs`.
 
 ## Przykładowy przepływ
 
@@ -92,7 +100,14 @@ więc ponowne wywołanie tego samego slotu nie uruchomi taska drugi raz.
 
 Ewolucja oznacza tutaj zamkniętą, audytowalną pętlę informacji zwrotnej:
 
-`trigger/cron → task contract → doctor → repair → validator → receipt → health/backoff → następna generacja`.
+`ticket/trigger → task contract → doctor → repair → validator → receipt → health/backoff → następna generacja`.
+
+Planfile i trwały stan connectora pozostają właścicielami backlogu i retry.
+`subactor/orchestrator` jest warstwą polityki decyzji (authority, provider,
+continuity), ale nie zastępuje schedulera: obecnie nie utrwala własnych prób
+strategii po restarcie. Connector zapisuje kompatybilny kontrakt blokady tam,
+gdzie trwałość już istnieje; bezpośrednie wywołanie orchestratora można dołączyć
+po udostępnieniu jego stabilnego runtime API i trwałego rejestru prób.
 
 Connector nie zmienia samodzielnie kodu, allowlist ani polityki. Zmiana produktu
 jest możliwa wyłącznie jako jawny task dopuszczony przez kontrakt `todo-agent`, a

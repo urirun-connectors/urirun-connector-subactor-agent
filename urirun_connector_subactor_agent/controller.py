@@ -122,6 +122,7 @@ def _empty_state() -> dict[str, Any]:
         "processed_event_ids": [],
         "receipts": {},
         "task_health": {},
+        "resolutions": {},
         "history": [],
     }
 
@@ -268,12 +269,14 @@ def _planfile_event_id(ticket: dict[str, Any]) -> str:
     return f"planfile:{ticket['ticket_id']}:{digest}"
 
 
-def _pending_planfile_ticket(store: StateStore, ticket_id: str) -> bool:
-    return any(
-        str((event.get("context") or {}).get("ticket_id") or "") == ticket_id
+def _pending_planfile_ticket_ids(store: StateStore) -> set[str]:
+    return {
+        str((event.get("context") or {}).get("ticket_id") or "")
         for event in store.read().get("pending_events", [])
         if isinstance(event, dict)
-    )
+        and (event.get("context") or {}).get("source") == "planfile"
+        and (event.get("context") or {}).get("ticket_id")
+    }
 
 
 def _poll_planfile(settings: Settings, store: StateStore) -> dict[str, Any] | None:
@@ -282,12 +285,15 @@ def _poll_planfile(settings: Settings, store: StateStore) -> dict[str, Any] | No
     backend = _planfile_registry(settings)
     sync_tasks, next_task, _ = _todo_planfile_api()
     synced = sync_tasks(settings.root, backend)
-    ticket = next_task(settings.root, backend)
+    pending_ticket_ids = _pending_planfile_ticket_ids(store)
+    ticket = next_task(settings.root, backend, exclude_ticket_ids=pending_ticket_ids)
     if not ticket:
-        return {"synced": len(synced), "ticket": None}
+        return {
+            "synced": len(synced),
+            "ticket": None,
+            "excluded_pending": sorted(pending_ticket_ids),
+        }
     ticket_id = str(ticket["ticket_id"])
-    if _pending_planfile_ticket(store, ticket_id):
-        return {"synced": len(synced), "ticket": ticket_id, "action": "already-pending"}
     event_id = _planfile_event_id(ticket)
     emitted = emit_trigger(
         kind="ticket",
@@ -301,6 +307,7 @@ def _poll_planfile(settings: Settings, store: StateStore) -> dict[str, Any] | No
         "task_id": str(ticket["task_id"]),
         "event_id": event_id,
         "action": "deduplicated" if emitted["deduplicated"] else "enqueued",
+        "excluded_pending": sorted(pending_ticket_ids),
     }
 
 
@@ -343,6 +350,40 @@ def _finish_planfile_event(settings: Settings, event: dict[str, Any], cycle: dic
     else:
         return None
     transition = _set_planfile_event_status(settings, event, target)
+    if transition and target in {"open", "review"}:
+        failed = next(
+            (item for item in results if isinstance(item, dict) and item.get("status") == "failed"),
+            {},
+        )
+        reason_code = (
+            "contract_or_policy_failure"
+            if non_retryable
+            else "verification_required"
+            if "warning" in statuses
+            else "execution_failure"
+        )
+        resolution = {
+            "schema": "subactor.resolution.blocker/v1",
+            "task_id": str(event.get("task_id") or "unknown"),
+            "reason_code": reason_code,
+            "required_capabilities": [],
+            "attempts": [str(failed.get("receipt"))] if failed.get("receipt") else [],
+            "evidence": {
+                "ticket_id": str(context["ticket_id"]),
+                "status": str(failed.get("status") or ("warning" if "warning" in statuses else "unknown")),
+                "error": str(failed.get("error") or "")[:500],
+            },
+            "task_state": "verifying" if "warning" in statuses else "resolving",
+            "platform_mode": "degraded" if target == "review" else "continuity",
+            "continue_unblocked": True,
+            "disposition": "human_review" if target == "review" else "retry_after_backoff",
+            "retry_at": failed.get("retry_at") if target == "open" else None,
+            "recorded_at": _iso_now(),
+        }
+        _record_resolution(StateStore(settings.state_dir), resolution)
+        cycle["resolution"] = resolution
+    elif transition and target == "done":
+        _clear_resolution(StateStore(settings.state_dir), str(event.get("task_id") or ""))
     if non_retryable and transition:
         _complete_event(StateStore(settings.state_dir), str(event.get("id") or ""))
     return transition
@@ -508,6 +549,26 @@ def _append_history(state: dict[str, Any], item: dict[str, Any]) -> None:
     history = state.setdefault("history", [])
     history.append(item)
     del history[:-200]
+
+
+def _record_resolution(store: StateStore, resolution: dict[str, Any]) -> None:
+    task_id = str(resolution.get("task_id") or "unknown")
+
+    def record(state: dict[str, Any]) -> None:
+        state.setdefault("resolutions", {})[task_id] = resolution
+        _append_history(state, {"resolution": resolution})
+
+    store.update(record)
+
+
+def _clear_resolution(store: StateStore, task_id: str) -> None:
+    if not task_id:
+        return
+
+    def clear(state: dict[str, Any]) -> None:
+        state.setdefault("resolutions", {}).pop(task_id, None)
+
+    store.update(clear)
 
 
 def _finish(
@@ -698,10 +759,58 @@ def _next_generation(state: dict[str, Any], trigger: str, trigger_id: str) -> in
     return generation
 
 
-def _next_pending(store: StateStore) -> dict[str, Any] | None:
+def _event_retry_at(state: dict[str, Any], event: dict[str, Any]) -> datetime | None:
+    task_id = str(event.get("task_id") or "")
+    event_id = str(event.get("id") or "")
+    if not task_id or not event_id:
+        return None
+    receipt = state.get("receipts", {}).get(f"trigger:{event_id}:{task_id}", {})
+    retry_at = str(receipt.get("retry_at") or "") if receipt.get("status") == "failed" else ""
+    return _parse_iso(retry_at) if retry_at else None
+
+
+def _next_pending(store: StateStore, *, now_utc: datetime | None = None) -> dict[str, Any] | None:
     state = store.read()
     pending = state.get("pending_events", [])
+    current = now_utc or datetime.now(UTC)
+    for event in pending:
+        retry_at = _event_retry_at(state, event)
+        if retry_at is None or retry_at <= current:
+            return dict(event)
+    return None
+
+
+def _first_pending(store: StateStore) -> dict[str, Any] | None:
+    pending = store.read().get("pending_events", [])
     return dict(pending[0]) if pending else None
+
+
+def _planfile_idle_cycle(store: StateStore, *, execute: bool, apply_changes: bool) -> dict[str, Any]:
+    state = store.read()
+    deferred = []
+    for event in state.get("pending_events", []):
+        retry_at = _event_retry_at(state, event)
+        if retry_at:
+            deferred.append(
+                {
+                    "event_id": event.get("id"),
+                    "task_id": event.get("task_id"),
+                    "retry_at": retry_at.isoformat().replace("+00:00", "Z"),
+                }
+            )
+    return {
+        "generation": int(state.get("generation", 0)),
+        "trigger": "ticket",
+        "trigger_id": None,
+        "execute": execute,
+        "apply_changes": apply_changes,
+        "discovered": 0,
+        "selected": 0,
+        "completed": True,
+        "results": [],
+        "idle_reason": "retry_backoff" if deferred else "no_open_ticket",
+        "deferred": deferred,
+    }
 
 
 def run_loop(
@@ -735,6 +844,8 @@ def run_loop(
         if event is None:
             registry = _poll_planfile(settings, store)
             event = _next_pending(store)
+            if event is None and not settings.planfile_backend:
+                event = _first_pending(store)
         if event:
             started = _set_planfile_event_status(settings, event, "in_progress") if execute else None
             try:
@@ -755,6 +866,8 @@ def run_loop(
             transition = _finish_planfile_event(settings, event, cycle)
             if transition:
                 cycle["planfile_transition"] = transition
+        elif settings.planfile_backend:
+            cycle = _planfile_idle_cycle(store, execute=execute, apply_changes=apply_changes)
         else:
             cycle = run_cycle(
                 trigger="schedule",
@@ -779,6 +892,7 @@ def status() -> dict[str, Any]:
         "pending_events": state.get("pending_events", []),
         "queue_depth": len(state.get("pending_events", [])),
         "task_health": state.get("task_health", {}),
+        "resolutions": state.get("resolutions", {}),
         "last_cycle": state.get("last_cycle"),
         "enabled": settings.enabled,
         "allow_apply": settings.allow_apply,

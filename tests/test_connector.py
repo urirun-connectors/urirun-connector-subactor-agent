@@ -164,7 +164,7 @@ def test_planfile_ticket_is_enqueued_executed_and_completed(configured, monkeypa
         "_todo_planfile_api",
         lambda: (
             lambda repo_root, selected_backend: [{"task_id": "0042"}],
-            lambda repo_root, selected_backend: {
+            lambda repo_root, selected_backend, **kwargs: {
                 "ticket_id": "91",
                 "task_id": "0042",
                 "status": "open",
@@ -200,7 +200,7 @@ def test_planfile_preview_keeps_ticket_open(configured, monkeypatch: pytest.Monk
         "_todo_planfile_api",
         lambda: (
             lambda repo_root, selected_backend: [{"task_id": "0042"}],
-            lambda repo_root, selected_backend: {
+            lambda repo_root, selected_backend, **kwargs: {
                 "ticket_id": "93",
                 "task_id": "0042",
                 "status": "open",
@@ -233,7 +233,7 @@ def test_failed_planfile_ticket_reopens_and_keeps_retry_event(configured, monkey
         "_todo_planfile_api",
         lambda: (
             lambda repo_root, selected_backend: [],
-            lambda repo_root, selected_backend: {
+            lambda repo_root, selected_backend, **kwargs: {
                 "ticket_id": "92",
                 "task_id": "0042",
                 "status": "open",
@@ -248,6 +248,108 @@ def test_failed_planfile_ticket_reopens_and_keeps_retry_event(configured, monkey
     assert result["cycles"][0]["results"][0]["status"] == "failed"
     assert transitions == [("92", "in_progress"), ("92", "open")]
     assert controller.status()["queue_depth"] == 1
+    resolution = controller.status()["resolutions"]["0042"]
+    assert resolution["schema"] == "subactor.resolution.blocker/v1"
+    assert resolution["continue_unblocked"] is True
+    assert resolution["disposition"] == "retry_after_backoff"
+
+
+def test_deferred_planfile_retry_does_not_block_next_ticket(configured, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, _ = configured
+    calls: list = []
+    transitions: list[tuple[str, str]] = []
+    backend = object()
+    tasks = [
+        {"task_id": "0042", "schedule_slot": "manual"},
+        {"task_id": "0043", "schedule_slot": "manual"},
+    ]
+
+    def run_task(selected_root, task_id, *, apply_changes):
+        calls.append((selected_root, task_id, apply_changes))
+        status = "failed" if task_id == "0042" else "succeeded"
+        return {"status": status, "correlation_id": f"todo-agent:{task_id}:run"}, root / "runs" / task_id
+
+    def next_task(repo_root, selected_backend, *, exclude_ticket_ids=None):
+        excluded = exclude_ticket_ids or set()
+        if "92" not in excluded:
+            return {
+                "ticket_id": "92",
+                "task_id": "0042",
+                "status": "open",
+                "updated_at": "2026-07-21T12:01:00Z",
+            }
+        return {
+            "ticket_id": "93",
+            "task_id": "0043",
+            "status": "open",
+            "updated_at": "2026-07-21T12:02:00Z",
+        }
+
+    monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SUBACTOR_PLANFILE_BACKEND", "onedev")
+    monkeypatch.setattr(controller, "_planfile_registry", lambda settings: backend)
+    monkeypatch.setattr(
+        controller,
+        "_todo_api",
+        lambda: (
+            lambda selected_root, *, event, task_id, now_utc: [
+                item for item in tasks if not task_id or item["task_id"] == task_id
+            ],
+            run_task,
+        ),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_todo_planfile_api",
+        lambda: (
+            lambda repo_root, selected_backend: [],
+            next_task,
+            lambda selected_backend, ticket_id, status: transitions.append((ticket_id, status)),
+        ),
+    )
+
+    result = controller.run_loop(max_cycles=2, interval_seconds=0, execute=True)
+
+    assert [item[1] for item in calls] == ["0042", "0043"]
+    assert transitions == [
+        ("92", "in_progress"),
+        ("92", "open"),
+        ("93", "in_progress"),
+        ("93", "done"),
+    ]
+    assert result["cycles"][1]["planfile_registry"]["excluded_pending"] == ["92"]
+    assert controller.status()["queue_depth"] == 1
+
+
+def test_empty_planfile_backlog_does_not_fall_back_to_local_schedule(
+    configured, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list = []
+    backend = object()
+    monkeypatch.setenv("SUBACTOR_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SUBACTOR_PLANFILE_BACKEND", "onedev")
+    monkeypatch.setattr(controller, "_planfile_registry", lambda settings: backend)
+    monkeypatch.setattr(
+        controller,
+        "_todo_api",
+        lambda: _fake_api([{"task_id": "0042", "schedule_slot": "due"}], calls=calls),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_todo_planfile_api",
+        lambda: (
+            lambda repo_root, selected_backend: [],
+            lambda repo_root, selected_backend, **kwargs: None,
+            lambda selected_backend, ticket_id, status: None,
+        ),
+    )
+
+    cycle = controller.run_loop(max_cycles=1, interval_seconds=0, execute=True)["cycles"][0]
+
+    assert calls == []
+    assert cycle["idle_reason"] == "no_open_ticket"
+    assert cycle["trigger"] == "ticket"
+    assert cycle["generation"] == 0
 
 
 def test_non_retryable_planfile_policy_failure_moves_to_review(configured, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -282,7 +384,7 @@ def test_non_retryable_planfile_policy_failure_moves_to_review(configured, monke
         "_todo_planfile_api",
         lambda: (
             lambda repo_root, selected_backend: [],
-            lambda repo_root, selected_backend: {
+            lambda repo_root, selected_backend, **kwargs: {
                 "ticket_id": "94",
                 "task_id": "0042",
                 "status": "open",
@@ -299,6 +401,7 @@ def test_non_retryable_planfile_policy_failure_moves_to_review(configured, monke
     assert failure["retryable"] is False
     assert transitions == [("94", "in_progress"), ("94", "review")]
     assert controller.status()["queue_depth"] == 0
+    assert controller.status()["resolutions"]["0042"]["disposition"] == "human_review"
 
 
 def test_loop_progresses_across_more_tasks_than_cycle_limit(configured, monkeypatch: pytest.MonkeyPatch) -> None:
