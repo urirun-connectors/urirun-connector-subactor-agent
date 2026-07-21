@@ -18,7 +18,10 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e '.[todo,test]'
+      # todo-agent is a lazy, deployment-side dependency. Unit tests inject its
+      # public API, so this public repository does not require cross-repository
+      # credentials to validate the connector contract.
+      - run: python -m pip install -e '.[test]'
       - run: ruff check .
       - run: python -m pytest
       - run: python -m build
